@@ -3,6 +3,7 @@
 
 #[cfg(msim)]
 mod test {
+    use prometheus::register;
     use rand::{distributions::uniform::SampleRange, thread_rng, Rng};
     use std::collections::HashSet;
     use std::path::PathBuf;
@@ -257,6 +258,8 @@ mod test {
     #[sim_test(config = "test_config()")]
     async fn test_simulated_load_reconfig_with_crashes_and_delays() {
         sui_protocol_config::ProtocolConfig::poison_get_for_min_version();
+
+        register_fail_point_if("select-random-cache", || true);
 
         let test_cluster = init_test_cluster_builder(4, 1000)
             .with_num_unpruned_validators(4)
