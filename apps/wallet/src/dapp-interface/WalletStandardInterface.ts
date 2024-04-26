@@ -28,9 +28,9 @@ import {
 } from '_src/shared/messaging/messages/payloads/QredoConnect';
 import { type SignMessageRequest } from '_src/shared/messaging/messages/payloads/transactions/SignMessage';
 import { isWalletStatusChangePayload } from '_src/shared/messaging/messages/payloads/wallet-status-change';
-import { bcs } from '@mysten/sui.js/bcs';
-import { isTransactionBlock } from '@mysten/sui.js/transactions';
-import { fromB64, toB64 } from '@mysten/sui.js/utils';
+import { bcs } from '@mysten/sui/bcs';
+import { isTransactionBlock } from '@mysten/sui/transactions';
+import { fromB64, toB64 } from '@mysten/sui/utils';
 import {
 	ReadonlyWalletAccount,
 	SUI_CHAINS,

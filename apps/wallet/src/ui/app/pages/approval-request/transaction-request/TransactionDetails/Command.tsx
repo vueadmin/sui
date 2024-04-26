@@ -4,18 +4,16 @@
 import { Text } from '_src/ui/app/shared/text';
 import { ChevronDown12, ChevronRight12 } from '@mysten/icons';
 import {
-	type TransactionArgument,
+	type Argument,
 	type TransactionBlockData,
 	type Transactions,
-} from '@mysten/sui.js/transactions';
-import { toB64 } from '@mysten/sui.js/utils';
+} from '@mysten/sui/transactions';
+import { toB64 } from '@mysten/sui/utils';
 import { useState } from 'react';
 
 type TransactionType = TransactionBlockData['transactions'][0];
 type MakeMoveVecTransaction = ReturnType<(typeof Transactions)['MakeMoveVec']>;
 type PublishTransaction = ReturnType<(typeof Transactions)['Publish']>;
-type Argument = Exclude<TransactionArgument, (...args: any) => unknown>;
-
 function convertCommandArgumentToString(
 	arg:
 		| null

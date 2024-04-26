@@ -1,8 +1,8 @@
 // Copyright (c) Mysten Labs, Inc.
 // SPDX-License-Identifier: Apache-2.0
 
-import type { TransactionBlock } from '@mysten/sui.js/transactions';
-import { toB64 } from '@mysten/sui.js/utils';
+import type { TransactionBlock } from '@mysten/sui/transactions';
+import { toB64 } from '@mysten/sui/utils';
 import type {
 	SuiSignAndExecuteTransactionBlockV2Input,
 	SuiSignAndExecuteTransactionBlockV2Output,
