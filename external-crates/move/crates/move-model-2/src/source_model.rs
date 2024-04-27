@@ -6,8 +6,11 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     sync::Arc,
 };
-
-use move_binary_format::file_format::{self, SignatureToken};
+use move_binary_format::file_format::{
+    self, AbilitySet, CodeOffset, CodeUnit, CompiledModule, ConstantPoolIndex,
+    FunctionHandleIndex, LocalIndex, MemberCount, SignatureToken, StructFieldInformation,
+    StructHandleIndex, StructTypeParameter, TypeParameterIndex, Visibility,
+};
 use move_compiler::{
     self,
     compiled_unit::AnnotatedCompiledUnit,
@@ -20,7 +23,10 @@ use move_compiler::{
     },
 };
 use move_core_types::{
-    account_address::AccountAddress, annotated_value, language_storage::ModuleId as CoreModuleId,
+    account_address::AccountAddress,
+    annotated_value,
+    language_storage::ModuleId as CoreModuleId,
+    u256::U256,
 };
 use move_ir_types::{ast as ir, location::Spanned};
 use move_symbol_pool::Symbol;
@@ -84,7 +90,6 @@ pub enum Datatype<'a> {
 
 #[derive(Clone, Copy)]
 pub struct Struct<'a> {
-    name: Symbol,
     module: Module<'a>,
     data: &'a StructData,
 }
@@ -97,8 +102,13 @@ pub struct Enum<'a> {
 }
 
 #[derive(Clone, Copy)]
+pub struct Field<'a> {
+    struct_: Struct<'a>,
+    data: &'a FieldData,
+}
+
+#[derive(Clone, Copy)]
 pub struct Function<'a> {
-    name: Symbol,
     module: Module<'a>,
     data: &'a FunctionData,
 }
@@ -108,6 +118,101 @@ pub struct Constant<'a> {
     name: Symbol,
     module: Module<'a>,
     data: &'a ConstantData,
+}
+
+#[derive(Clone)]
+pub enum Type {
+    Bool,
+    U8,
+    U16,
+    U32,
+    U64,
+    U128,
+    U256,
+    Address,
+    Vector(Box<Type>),
+    Struct(Box<QualifiedMemberId>),
+    StructInstantiation(Box<(QualifiedMemberId, Vec<Type>)>),
+    Reference(Box<Type>),
+    MutableReference(Box<Type>),
+    TypeParameter(TypeParameterIndex),
+}
+
+#[derive(Clone)]
+pub enum Bytecode {
+    Nop,
+    Pop,
+    Ret,
+    BrTrue(CodeOffset),
+    BrFalse(CodeOffset),
+    Branch(CodeOffset),
+    LdConst(ConstantPoolIndex),
+    LdTrue,
+    LdFalse,
+    LdU8(u8),
+    LdU16(u16),
+    LdU32(u32),
+    LdU64(u64),
+    LdU128(Box<u128>),
+    LdU256(Box<U256>),
+    CastU8,
+    CastU16,
+    CastU32,
+    CastU64,
+    CastU128,
+    CastU256,
+    Add,
+    Sub,
+    Mul,
+    Mod,
+    Div,
+    BitOr,
+    BitAnd,
+    Xor,
+    Or,
+    And,
+    Not,
+    Eq,
+    Neq,
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Shl,
+    Shr,
+    Abort,
+    CopyLoc(LocalIndex),
+    MoveLoc(LocalIndex),
+    StLoc(LocalIndex),
+    Call(Box<QualifiedMemberId>),
+    CallGeneric(Box<(QualifiedMemberId, Vec<Type>)>),
+    Pack(Box<QualifiedMemberId>),
+    PackGeneric(Box<(QualifiedMemberId, Vec<Type>)>),
+    Unpack(Box<QualifiedMemberId>),
+    UnpackGeneric(Box<(QualifiedMemberId, Vec<Type>)>),
+    MutBorrowLoc(LocalIndex),
+    ImmBorrowLoc(LocalIndex),
+    MutBorrowField(Box<FieldRef>),
+    MutBorrowFieldGeneric(Box<(FieldRef, Vec<Type>)>),
+    ImmBorrowField(Box<FieldRef>),
+    ImmBorrowFieldGeneric(Box<(FieldRef, Vec<Type>)>),
+    ReadRef,
+    WriteRef,
+    FreezeRef,
+    VecPack(Box<(Type, u64)>),
+    VecLen(Box<Type>),
+    VecImmBorrow(Box<Type>),
+    VecMutBorrow(Box<Type>),
+    VecPushBack(Box<Type>),
+    VecPopBack(Box<Type>),
+    VecUnpack(Box<(Type, u64)>),
+    VecSwap(Box<Type>),
+}
+
+#[derive(Clone)]
+pub struct FieldRef {
+    struct_: QualifiedMemberId,
+    field: MemberCount,
 }
 
 //**************************************************************************************************
@@ -266,7 +371,6 @@ impl<'a> Module<'a> {
         let name = name.into();
         let data = &self.data.structs.get(&name)?;
         Some(Struct {
-            name,
             module: *self,
             data,
         })
@@ -292,7 +396,6 @@ impl<'a> Module<'a> {
         let name = name.into();
         let data = &self.data.functions.get(&name)?;
         Some(Function {
-            name,
             module: *self,
             data,
         })
@@ -384,7 +487,7 @@ impl<'a> Module<'a> {
 
 impl<'a> Struct<'a> {
     pub fn name(&self) -> Symbol {
-        self.name
+        self.data.name
     }
 
     pub fn model(&self) -> &'a Model {
@@ -399,8 +502,20 @@ impl<'a> Struct<'a> {
         self.module
     }
 
+    pub fn abilities(&self) -> AbilitySet {
+        self.data.abilities
+    }
+
+    pub fn type_parameters(&self) -> &[StructTypeParameter] {
+        &self.data.type_parameters
+    }
+
+    pub fn fields(&self) -> impl Iterator<Item = Field<'_>> {
+        self.data.fields.iter().map(|field| Field { struct_: *self, data: field })
+    }
+
     pub fn info(&self) -> &'a N::StructDefinition {
-        self.module.info().structs.get_(&self.name).unwrap()
+        self.module.info().structs.get_(&self.data.name).unwrap()
     }
 
     pub fn compiled(&self) -> &'a file_format::StructDefinition {
@@ -464,7 +579,7 @@ impl<'a> Enum<'a> {
 
 impl<'a> Function<'a> {
     pub fn name(&self) -> Symbol {
-        self.name
+        self.data.name
     }
 
     pub fn package(&self) -> Package<'a> {
@@ -479,8 +594,36 @@ impl<'a> Function<'a> {
         self.module
     }
 
+    pub fn visibility(&self) -> Visibility {
+        self.data.visibility
+    }
+
+    pub fn is_entry(&self) -> bool {
+        self.data.is_entry
+    }
+
+    pub fn parameters(&self) -> &[Type] {
+        &self.data.parameters
+    }
+
+    pub fn returns(&self) -> &[Type] {
+        &self.data.returns
+    }
+
+    pub fn type_parameters(&self) -> &[AbilitySet] {
+        &self.data.type_parameters
+    }
+
+    pub fn locals(&self) -> Option<&[Type]> {
+        self.data.code.as_ref().map(|c| &c.locals[..])
+    }
+
+    pub fn code(&self) ->  Option<&[Bytecode]> {
+        self.data.code.as_ref().map(|c| &c.code[..])
+    }
+
     pub fn info(&self) -> &'a FunctionInfo {
-        self.module.info().functions.get_(&self.name).unwrap()
+        self.module.info().functions.get_(&self.data.name).unwrap()
     }
 
     pub fn compiled(&self) -> &'a file_format::FunctionDefinition {
@@ -531,6 +674,20 @@ impl<'a> Function<'a> {
     /// Returns an iterator over the functions that call this function.
     pub fn called_by(&self) -> &'a BTreeSet<QualifiedMemberId> {
         &self.data.called_by
+    }
+}
+
+impl<'a> Field<'a> {
+    pub fn name(&self) -> Symbol {
+        self.data.name
+    }
+
+    pub fn type_(&self) -> Type {
+        self.data.type_.clone()
+    }
+
+    pub fn struct_(&self) -> Struct<'a> {
+        self.struct_
     }
 }
 
@@ -697,17 +854,40 @@ struct ModuleData {
     used_by: BTreeMap<ModuleId, /* is immediate */ bool>,
 }
 
-pub struct StructData {
+struct StructData {
+    name: Symbol,
+    abilities: AbilitySet,
+    type_parameters: Vec<StructTypeParameter>,
+    fields: Vec<FieldData>,
+
+    // idx in the binary data (`CompiledModule`)
     compiled_idx: file_format::StructDefinitionIndex,
+}
+
+struct FieldData {
+    name: Symbol,
+    type_: Type,
 }
 
 struct EnumData {}
 
 struct FunctionData {
-    compiled_idx: file_format::FunctionDefinitionIndex,
+    name: Symbol,
+    visibility: Visibility,
+    is_entry: bool,
+    type_parameters: Vec<AbilitySet>,
+    parameters: Vec<Type>,
+    returns: Vec<Type>,
+    code: Option<Code>,
     calls: BTreeSet<QualifiedMemberId>,
     // reverse mapping of function_immediate_deps
     called_by: BTreeSet<QualifiedMemberId>,
+    compiled_idx: file_format::FunctionDefinitionIndex,
+}
+
+struct Code {
+    locals: Vec<Type>,
+    code: Vec<Bytecode>,
 }
 
 struct ConstantData {
@@ -869,7 +1049,7 @@ impl PackageData {
 
 impl ModuleData {
     fn new(
-        _id: ModuleId,
+        id: ModuleId,
         ident: E::ModuleIdent,
         info: &ModuleInfo,
         unit: &AnnotatedCompiledUnit,
@@ -877,30 +1057,12 @@ impl ModuleData {
         let structs = info
             .structs
             .iter()
-            .map(|(_loc, name, _sinfo)| {
-                let name = *name;
-                let (idx, _struct_def) = unit
-                    .named_module
-                    .module
-                    .find_struct_def_by_name(name.as_str())
-                    .unwrap();
-                let struct_ = StructData::new(idx);
-                (name, struct_)
-            })
+            .map(|(_loc, name, _sinfo)| make_struct(*name, &id, &unit.named_module.module))
             .collect();
         let functions = info
             .functions
             .iter()
-            .map(|(_loc, name, _finfo)| {
-                let name = *name;
-                let (idx, _function_def) = unit
-                    .named_module
-                    .module
-                    .find_function_def_by_name(name.as_str())
-                    .unwrap();
-                let function = FunctionData::new(idx);
-                (name, function)
-            })
+            .map(|(_loc, name, _finfo)| make_fun(*name, &id, &unit.named_module.module))
             .collect();
         let constants = info
             .constants
@@ -932,14 +1094,42 @@ impl ModuleData {
 }
 
 impl StructData {
-    fn new(compiled_idx: file_format::StructDefinitionIndex) -> Self {
-        Self { compiled_idx }
+    fn new(
+        name: Symbol,
+        abilities: AbilitySet,
+        type_parameters: Vec<StructTypeParameter>,
+        fields: Vec<FieldData>,
+        compiled_idx: file_format::StructDefinitionIndex,
+    ) -> Self {
+        Self {
+            name,
+            abilities,
+            type_parameters,
+            fields,
+            compiled_idx,
+        }
     }
 }
 
 impl FunctionData {
-    fn new(compiled_idx: file_format::FunctionDefinitionIndex) -> Self {
+    fn new(
+        name: Symbol,
+        visibility: Visibility,
+        is_entry: bool,
+        type_parameters: Vec<AbilitySet>,
+        parameters: Vec<Type>,
+        returns: Vec<Type>,
+        code: Option<Code>,
+        compiled_idx: file_format::FunctionDefinitionIndex,
+    ) -> Self {
         Self {
+            name,
+            visibility,
+            is_entry,
+            type_parameters,
+            parameters,
+            returns,
+            code,
             compiled_idx,
             calls: BTreeSet::new(),
             called_by: BTreeSet::new(),
@@ -955,3 +1145,362 @@ impl ConstantData {
         }
     }
 }
+
+fn into_type(ty: &SignatureToken, module: &CompiledModule, module_id: &ModuleId) -> Type {
+    match ty {
+        SignatureToken::Bool => Type::Bool,
+        SignatureToken::U8 => Type::U8,
+        SignatureToken::U16 => Type::U16,
+        SignatureToken::U32 => Type::U32,
+        SignatureToken::U64 => Type::U64,
+        SignatureToken::U128 => Type::U128,
+        SignatureToken::U256 => Type::U256,
+        SignatureToken::Address => Type::Address,
+        SignatureToken::Vector(ty) =>
+            Type::Vector(Box::new(into_type(&*ty, module, module_id))),
+        SignatureToken::Struct(idx) => {
+            let struct_id = struct_id_from_handle(module, *idx, module_id);
+            Type::Struct(Box::new(struct_id))
+        }
+        SignatureToken::StructInstantiation(st_inst) => {
+            let (idx, tys) = &**st_inst;
+            let struct_id = struct_id_from_handle(module, *idx, module_id);
+            let type_params = tys
+                .iter()
+                .map(|ty| into_type(ty, module, module_id))
+                .collect();
+            Type::StructInstantiation(Box::new((struct_id, type_params)))
+        }
+        SignatureToken::Reference(ty) =>
+            Type::Reference(Box::new(into_type(&*ty, module, module_id))),
+        SignatureToken::MutableReference(ty) =>
+            Type::MutableReference(Box::new(into_type(&*ty, module, module_id))),
+        SignatureToken::TypeParameter(idx) => Type::TypeParameter(*idx),
+        _ => unreachable!("Unexpected type: {:?}", ty),
+    }
+}
+
+fn make_struct(
+    name: Symbol,
+    id: &ModuleId,
+    compiled_module: &CompiledModule,
+) -> (Symbol, StructData) {
+    let (idx, struct_def) = compiled_module
+        .find_struct_def_by_name(name.as_str())
+        .unwrap();
+    let struct_handle = compiled_module.struct_handle_at(struct_def.struct_handle);
+    let fields =
+        if let StructFieldInformation::Declared(fields) = &struct_def.field_information {
+            fields
+                .iter()
+                .map(|field| {
+                    let name = Symbol::from(
+                        compiled_module.identifier_at(field.name).as_str()
+                    );
+                    let type_ = into_type(&field.signature.0, compiled_module, id);
+                    FieldData {
+                        name,
+                        type_,
+                    }
+                })
+                .collect()
+        } else {
+            vec![]
+        };
+    let struct_ = StructData::new(
+        name,
+        struct_handle.abilities,
+        struct_handle.type_parameters.clone(),
+        fields,
+        idx,
+    );
+    (name, struct_)
+}
+
+fn make_fun(
+    name: Symbol,
+    id: &ModuleId,
+    compiled_module: &CompiledModule,
+) -> (Symbol, FunctionData) {
+    let (idx, func_def) = compiled_module
+        .find_function_def_by_name(name.as_str())
+        .unwrap();
+    let func_handle = compiled_module.function_handle_at(func_def.function);
+    let visibility = func_def.visibility;
+    let is_entry = func_def.is_entry;
+    let type_parameters = func_handle.type_parameters.clone();
+    let parameters = compiled_module
+        .signature_at(func_handle.parameters)
+        .0
+        .iter()
+        .map(|ty| into_type(ty, compiled_module, id))
+        .collect();
+    let returns = compiled_module
+        .signature_at(func_handle.return_)
+        .0
+        .iter()
+        .map(|ty| into_type(ty, compiled_module, id))
+        .collect();
+    let code = func_def
+        .code
+        .as_ref()
+        .map(|code| make_code(code, compiled_module, id));
+    let function = FunctionData::new(
+        name,
+        visibility,
+        is_entry,
+        type_parameters,
+        parameters,
+        returns,
+        code,
+        idx,
+    );
+    (name, function)
+}
+
+fn make_code(
+    code: &CodeUnit,
+    compiled_module: &CompiledModule,
+    id: &ModuleId,
+) -> Code {
+    use file_format::Bytecode as BinaryBytecode;
+    let locals = compiled_module
+        .signature_at(code.locals)
+        .0
+        .iter()
+        .map(|ty| into_type(ty, compiled_module, id))
+        .collect();
+    let bytecode = code
+        .code
+        .iter()
+        .map(|instr| match instr {
+            BinaryBytecode::Nop => Bytecode::Nop,
+            BinaryBytecode::Pop => Bytecode::Pop,
+            BinaryBytecode::Ret => Bytecode::Ret,
+            BinaryBytecode::BrTrue(offset) => Bytecode::BrTrue(*offset),
+            BinaryBytecode::BrFalse(offset) => Bytecode::BrFalse(*offset),
+            BinaryBytecode::Branch(offset) => Bytecode::Branch(*offset),
+            BinaryBytecode::LdConst(idx) => Bytecode::LdConst(*idx),
+            BinaryBytecode::LdTrue => Bytecode::LdTrue,
+            BinaryBytecode::LdFalse => Bytecode::LdFalse,
+            BinaryBytecode::LdU8(v) => Bytecode::LdU8(*v),
+            BinaryBytecode::LdU16(v) => Bytecode::LdU16(*v),
+            BinaryBytecode::LdU32(v) => Bytecode::LdU32(*v),
+            BinaryBytecode::LdU64(v) => Bytecode::LdU64(*v),
+            BinaryBytecode::LdU128(v) => Bytecode::LdU128(v.clone()),
+            BinaryBytecode::LdU256(v) => Bytecode::LdU256(v.clone()),
+            BinaryBytecode::CastU8 => Bytecode::CastU8,
+            BinaryBytecode::CastU16 => Bytecode::CastU16,
+            BinaryBytecode::CastU32 => Bytecode::CastU32,
+            BinaryBytecode::CastU64 => Bytecode::CastU64,
+            BinaryBytecode::CastU128 => Bytecode::CastU128,
+            BinaryBytecode::CastU256 => Bytecode::CastU256,
+            BinaryBytecode::Add => Bytecode::Add,
+            BinaryBytecode::Sub => Bytecode::Sub,
+            BinaryBytecode::Mul => Bytecode::Mul,
+            BinaryBytecode::Mod => Bytecode::Mod,
+            BinaryBytecode::Div => Bytecode::Div,
+            BinaryBytecode::BitOr => Bytecode::BitOr,
+            BinaryBytecode::BitAnd => Bytecode::BitAnd,
+            BinaryBytecode::Xor => Bytecode::Xor,
+            BinaryBytecode::Or => Bytecode::Or,
+            BinaryBytecode::And => Bytecode::And,
+            BinaryBytecode::Not => Bytecode::Not,
+            BinaryBytecode::Eq => Bytecode::Eq,
+            BinaryBytecode::Neq => Bytecode::Neq,
+            BinaryBytecode::Lt => Bytecode::Lt,
+            BinaryBytecode::Gt => Bytecode::Gt,
+            BinaryBytecode::Le => Bytecode::Le,
+            BinaryBytecode::Ge => Bytecode::Ge,
+            BinaryBytecode::Shl => Bytecode::Shl,
+            BinaryBytecode::Shr => Bytecode::Shr,
+            BinaryBytecode::Abort => Bytecode::Abort,
+            BinaryBytecode::CopyLoc(idx) => Bytecode::CopyLoc(*idx),
+            BinaryBytecode::MoveLoc(idx) => Bytecode::MoveLoc(*idx),
+            BinaryBytecode::StLoc(idx) => Bytecode::StLoc(*idx),
+            BinaryBytecode::Call(idx) => {
+                let func = func_id_from_handle(compiled_module, *idx, id);
+                Bytecode::Call(Box::new(func))
+            }
+            BinaryBytecode::CallGeneric(idx) => {
+                let func_inst = compiled_module.function_instantiation_at(*idx);
+                let func = func_id_from_handle(compiled_module, func_inst.handle, id);
+                let type_params = compiled_module
+                    .signature_at(func_inst.type_parameters)
+                    .0
+                    .iter()
+                    .map(|ty| into_type(ty, compiled_module, id))
+                    .collect();
+                Bytecode::CallGeneric(Box::new((func, type_params)))
+            }
+            BinaryBytecode::Pack(idx) => {
+                let handle_idx = compiled_module.struct_def_at(*idx).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, handle_idx, id);
+                Bytecode::Pack(Box::new(struct_id))
+            }
+            BinaryBytecode::PackGeneric(idx) => {
+                let struct_inst = compiled_module.struct_instantiation_at(*idx);
+                let handle_idx = compiled_module.struct_def_at(struct_inst.def).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, handle_idx, id);
+                let type_params = compiled_module
+                    .signature_at(struct_inst.type_parameters)
+                    .0
+                    .iter()
+                    .map(|ty| into_type(ty, compiled_module, id))
+                    .collect();
+                Bytecode::PackGeneric(Box::new((struct_id, type_params)))
+            }
+            BinaryBytecode::Unpack(idx) => {
+                let handle_idx = compiled_module.struct_def_at(*idx).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, handle_idx, id);
+                Bytecode::Unpack(Box::new(struct_id))
+            }
+            BinaryBytecode::UnpackGeneric(idx) => {
+                let struct_inst = compiled_module.struct_instantiation_at(*idx);
+                let handle_idx = compiled_module.struct_def_at(struct_inst.def).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, handle_idx, id);
+                let type_params = compiled_module
+                    .signature_at(struct_inst.type_parameters)
+                    .0
+                    .iter()
+                    .map(|ty| into_type(ty, compiled_module, id))
+                    .collect();
+                Bytecode::UnpackGeneric(Box::new((struct_id, type_params)))
+            }
+            BinaryBytecode::MutBorrowLoc(idx) => Bytecode::MutBorrowLoc(*idx),
+            BinaryBytecode::ImmBorrowLoc(idx) => Bytecode::ImmBorrowLoc(*idx),
+            BinaryBytecode::MutBorrowField(idx) => {
+                let field_handle = compiled_module.field_handle_at(*idx);
+                let struct_handle =
+                    compiled_module.struct_def_at(field_handle.owner).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, struct_handle, id);
+                let field_ref = FieldRef {
+                    struct_: struct_id,
+                    field: field_handle.field,
+                };
+                Bytecode::MutBorrowField(Box::new(field_ref))
+            }
+            BinaryBytecode::MutBorrowFieldGeneric(idx) => {
+                let field_inst = compiled_module.field_instantiation_at(*idx);
+                let field_handle = compiled_module.field_handle_at(field_inst.handle);
+                let struct_handle =
+                    compiled_module.struct_def_at(field_handle.owner).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, struct_handle, id);
+                let field_ref = FieldRef {
+                    struct_: struct_id,
+                    field: field_handle.field,
+                };
+                let type_params = compiled_module
+                    .signature_at(field_inst.type_parameters)
+                    .0
+                    .iter()
+                    .map(|ty| into_type(ty, compiled_module, id))
+                    .collect();
+                Bytecode::MutBorrowFieldGeneric(Box::new((field_ref, type_params)))
+            }
+            BinaryBytecode::ImmBorrowField(idx) => {
+                let field_handle = compiled_module.field_handle_at(*idx);
+                let struct_handle =
+                    compiled_module.struct_def_at(field_handle.owner).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, struct_handle, id);
+                let field_ref = FieldRef {
+                    struct_: struct_id,
+                    field: field_handle.field,
+                };
+                Bytecode::ImmBorrowField(Box::new(field_ref))
+            }
+            BinaryBytecode::ImmBorrowFieldGeneric(idx) => {
+                let field_inst = compiled_module.field_instantiation_at(*idx);
+                let field_handle = compiled_module.field_handle_at(field_inst.handle);
+                let struct_handle =
+                    compiled_module.struct_def_at(field_handle.owner).struct_handle;
+                let struct_id = struct_id_from_handle(compiled_module, struct_handle, id);
+                let field_ref = FieldRef {
+                    struct_: struct_id,
+                    field: field_handle.field,
+                };
+                let type_params = compiled_module
+                    .signature_at(field_inst.type_parameters)
+                    .0
+                    .iter()
+                    .map(|ty| into_type(ty, compiled_module, id))
+                    .collect();
+                Bytecode::ImmBorrowFieldGeneric(Box::new((field_ref, type_params)))
+            }
+            BinaryBytecode::ReadRef => Bytecode::ReadRef,
+            BinaryBytecode::WriteRef => Bytecode::WriteRef,
+            BinaryBytecode::FreezeRef => Bytecode::FreezeRef,
+            BinaryBytecode::VecPack(idx, count) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecPack(Box::new((ty, *count)))
+            }
+            BinaryBytecode::VecLen(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecLen(Box::new(ty))
+            }
+            BinaryBytecode::VecImmBorrow(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecImmBorrow(Box::new(ty))
+            }
+            BinaryBytecode::VecMutBorrow(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecMutBorrow(Box::new(ty))
+            }
+            BinaryBytecode::VecPushBack(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecPushBack(Box::new(ty))
+            }
+            BinaryBytecode::VecPopBack(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecPopBack(Box::new(ty))
+            }
+            BinaryBytecode::VecUnpack(idx, count) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecUnpack(Box::new((ty, *count)))
+            }
+            BinaryBytecode::VecSwap(idx) => {
+                let token = &compiled_module.signature_at(*idx).0[0];
+                let ty = into_type(token, compiled_module, id);
+                Bytecode::VecSwap(Box::new(ty))
+            }
+            _ => unreachable!("Unexpected bytecode: {:?}", instr),
+        })
+        .collect();
+    Code { locals, code: bytecode }
+}
+
+fn struct_id_from_handle(
+    compiled_module: &CompiledModule,
+    handle_idx: StructHandleIndex,
+    module_id: &ModuleId,
+) -> QualifiedMemberId {
+    let handle = compiled_module.struct_handle_at(handle_idx);
+    let struct_name = Symbol::from(
+        compiled_module
+            .identifier_at(handle.name)
+            .as_str(),
+    );
+    (*module_id, struct_name)
+}
+
+fn func_id_from_handle(
+    compiled_module: &CompiledModule,
+    handle_idx: FunctionHandleIndex,
+    module_id: &ModuleId,
+) -> QualifiedMemberId {
+    let handle = compiled_module.function_handle_at(handle_idx);
+    let func_name = Symbol::from(
+        compiled_module
+            .identifier_at(handle.name)
+            .as_str(),
+    );
+    (*module_id, func_name)
+}
+
