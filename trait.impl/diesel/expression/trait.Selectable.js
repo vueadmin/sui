@@ -1,0 +1,4 @@
+(function() {var implementors = {
+"sui_indexer":[["impl&lt;__DB: Backend&gt; Selectable&lt;__DB&gt; for <a class=\"struct\" href=\"sui_indexer/models/epoch/struct.QueryableEpochInfo.html\" title=\"struct sui_indexer::models::epoch::QueryableEpochInfo\">QueryableEpochInfo</a>"]],
+"suins_indexer":[["impl&lt;__DB: Backend&gt; Selectable&lt;__DB&gt; for <a class=\"struct\" href=\"suins_indexer/models/struct.VerifiedDomain.html\" title=\"struct suins_indexer::models::VerifiedDomain\">VerifiedDomain</a>"]]
+};if (window.register_implementors) {window.register_implementors(implementors);} else {window.pending_implementors = implementors;}})()
